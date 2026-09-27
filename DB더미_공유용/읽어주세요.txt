@@ -1,0 +1,175 @@
+침수예측 - DB 더미 데이터 + FastAPI 변경 안내
+=============================================
+
+이 압축 파일에는 두 가지가 들어 있습니다.
+  (1) DB에 시연용 더미 데이터를 넣는 프로그램
+  (2) 예측 서버(FastAPI) main.py - DB 연결 주소가 추가된 버전
+
+* 2번 항목(ALTER TABLE)은 각자 DB에서 꼭 실행해야 합니다. 안 하면 오류가 납니다.
+
+
+1. 들어 있는 파일
+-----------------
+  DB더미생성.py                     더미 데이터를 넣는 프로그램
+  main.py                           예측 서버 (새 주소 추가된 버전)
+  침수예측_모델.pkl                  위험도 점수를 계산하는 모델
+  침수예측_모델_입력컬럼순서.pkl      모델 입력 순서
+  랜덤포레스트_학습용_더미_v3.xlsx    지하차도 31곳 정보
+  차량별_인식결과.csv                영상에서 인식한 번호판 45개
+
+
+2. 먼저 해야 할 일 - DB 칸 자료형 바꾸기 (중요!)
+-------------------------------------------------
+위험도 점수를 0~100점으로 쓰기로 했는데, 설계 SQL에는 DECIMAL(4,3)으로
+되어 있어 9.999까지만 들어갑니다. 아래 5줄을 먼저 실행해 주세요.
+
+  ALTER TABLE risk_score        ALTER COLUMN risk_score          TYPE numeric(5,1);
+  ALTER TABLE threshold         ALTER COLUMN risk_score_min      TYPE numeric(5,1);
+  ALTER TABLE threshold_history ALTER COLUMN old_risk_score_min  TYPE numeric(5,1);
+  ALTER TABLE threshold_history ALTER COLUMN new_risk_score_min  TYPE numeric(5,1);
+  ALTER TABLE underpass_event   ALTER COLUMN risk_score_at_event TYPE numeric(5,1);
+
+설계 SQL 파일(CREATE TABLE 스크립트)도 DECIMAL(5,1)로 고쳐야
+나중에 DB를 새로 만들 때 문제가 없습니다.
+
+
+3. 필요한 프로그램 설치
+-----------------------
+  pip install bcrypt psycopg2-binary pandas scikit-learn openpyxl joblib
+
+  주의: PaddlePaddle과 달리 이 프로그램은 Python 3.12든 3.14든 상관없습니다.
+
+
+4. DB 접속 정보 확인
+--------------------
+DB더미생성.py 파일을 열어 42번째 줄 근처를 자기 환경에 맞게 고쳐 주세요.
+
+  접속 = dict(host='localhost', dbname='postgres', user='postgres', password='1234')
+
+
+5. 실행
+-------
+  python DB더미생성.py
+
+  이미 데이터가 들어 있으면 아무것도 하지 않고 알려만 줍니다.
+  비우고 새로 넣으려면:
+
+  python DB더미생성.py --다시
+
+
+6. 무엇이 들어가나 (설계서의 22개 표 전부)
+------------------------------------------
+  [기본 정보]
+  지역             10곳
+  직원 / 관리자     7명 / 6명 (최고관리자 1, 지역담당 4, 승인대기 1)
+  회원 / 차량       45명 / 45대
+  지하차도          31곳
+  카메라            93대 (지하차도마다 CCTV·접근·진입직전 3대)
+  임계치            93건 + 변경이력 93건 (경고 40점, 위험 70점)
+
+  [예측과 이벤트]
+  위험도 점수        5,208건 (7일 x 24시간, 실제 침수예측 모델로 계산)
+  이벤트            411건 (위험도 변화·차단·해제)
+  전광판 조작 기록    187건 (차단·해제 안내, 위험 경고 문구)
+
+  [번호판과 통행]
+  번호판 인식        1,029건 (성공·신뢰도낮음·미매칭·실패 섞여 있음)
+  통행 기록          552건 (정상통과·진입중·잔류)
+  알림 발송 이력      316건
+
+  [게시판]
+  공지사항           10건 (중요공지 3건, 첨부 4건)
+  자주 묻는 질문      12건 (첨부 3건)
+  1:1 문의          15건 (답변 완료 11건, 대기 4건, 첨부 6건)
+  이메일 인증 내역     45건 (가입 30건, 비밀번호 재설정 15건)
+
+  공지사항과 FAQ 내용은 실제로 쓸 법한 문구로 채웠으니,
+  화면에 그대로 띄워도 어색하지 않습니다.
+
+  현재 상태: 위험 1곳(차단 중), 경고 3곳, 안전 27곳
+
+
+7. 로그인 계정
+--------------
+  관리자 : admin (최고관리자), manager1 ~ manager4 (지역담당)
+           manager5 는 승인 대기 상태 (승인 화면 시연용)
+  회원   : user001 ~ user045
+
+  비밀번호는 모두  test1234!
+
+  비밀번호는 BCrypt 해시로 저장되어 있습니다.
+  웹 로그인 검증도 BCrypt로 해야 합니다.
+  (스프링 시큐리티의 BCryptPasswordEncoder 기본 방식)
+
+  만약 웹에서 평문이나 다른 방식으로 비교한다면 로그인이 되지 않습니다.
+  그럴 때는 DB더미생성.py 의 해시() 함수를 고쳐서 다시 실행하면 됩니다.
+
+
+8. main.py - 예측 서버에 추가된 주소
+------------------------------------
+기존 /predict 는 flood_predictions 표에만 저장했습니다.
+이 표는 설계서에 없는 예전 시험용 표라, 예측을 해도 웹 화면이 보는
+risk_score / underpass 는 바뀌지 않았습니다.
+
+설계서 underpass 표에 이런 주석이 있습니다.
+  current_risk_level -- 현재 위험도 단계(FastAPI 수신 시마다 갱신, 오르내림 둘 다 반영)
+
+원래 이렇게 이어지도록 설계돼 있어서, 그 연결을 구현했습니다.
+
+[새 주소]  POST /predict/underpass
+
+  보내는 값 (예시)
+    {
+      "underpass_id": 1,
+      "강수량_mm": 45.0,
+      "직전1시간_mm": 38.0,
+      "최근3시간_누적_mm": 110.0,
+      "최근6시간_누적_mm": 150.0,
+      "최근12시간_누적_mm": 170.0,
+      "최근24시간_누적_mm": 180.0,
+      "예측강수량_mm": 40.0
+    }
+
+  호출하면 일어나는 일
+    1) underpass_id 로 예측
+       (기존 /predict 는 지하차도명을 글자로 받았지만 DB는 번호로 연결되어 있음)
+    2) 결과를 risk_score 표에 저장
+    3) 단계 판정 기준을 threshold 표에서 읽음
+       -> 관리자가 화면에서 기준을 바꾸면 서버를 다시 켜지 않아도 반영됨
+    4) 단계가 바뀌면
+       - underpass.current_risk_level 갱신
+       - underpass_event 에 RISK_LEVEL_UP / RISK_LEVEL_DOWN 기록
+
+  기존 /predict 는 건드리지 않았습니다. 쓰시던 대로 쓰시면 됩니다.
+
+[차단(BLOCK)은 일부러 넣지 않았습니다]
+  설계서의 CHECK 조건이 BLOCK / RELEASE 에 operator_id(조작한 관리자)를
+  필수로 요구합니다. 차단은 사람이 판단하고 책임을 기록에 남기라는 설계로 봤습니다.
+  모델 점수만 보고 자동으로 도로를 막으면 오작동 한 번이 사고로 이어질 수 있습니다.
+  예측 서버는 위험을 알리는 데까지만 하고, 차단은 관리자 화면에서 누르는 것으로 둡니다.
+
+[서버 실행]
+  pip install fastapi uvicorn psycopg2-binary pandas scikit-learn openpyxl joblib
+  python -m uvicorn main:app --reload
+
+  브라우저에서 http://127.0.0.1:8000 으로 접속하면 테스트 화면이 열립니다.
+
+[main.py 에 있는 주소 전체]
+  GET  /                      테스트 화면(/docs)으로 이동
+  POST /predict               (기존) 강수량을 직접 넣어 예측
+  POST /predict/underpass     (신규) 지하차도 번호로 예측 + DB 저장
+  GET  /underpasses           지하차도 31곳 목록
+  GET  /past_cases            실제로 있었던 침수·위험 사례 목록
+  GET  /predict_case/{번호}    실제 사례로 예측해서 정답과 비교 (시연용)
+
+
+9. 확인이 필요한 사항
+---------------------
+  underpass 테이블의 elevation 칸에는 해발고도(5~80m)를 넣었습니다.
+  설계서 주석이 '고도'라서 그렇게 해석했습니다.
+
+  그런데 침수예측 모델은 '지하차도 높이'(3.6~4.8m)를 입력으로 씁니다.
+  이 값을 저장할 칸이 현재 DB에 없습니다.
+
+  elevation 의 의미를 확정하거나, 지하차도 높이를 저장할 칸을
+  추가할지 논의가 필요합니다.
